@@ -1,19 +1,56 @@
 const { Op } = require('sequelize');
 const { Friend, User } = require('../models');
 
-exports.getAllFriends = async (req, res, next) => {
+exports.getUnknown = async (req, res, next) => {
   try {
-    const { status, searchName } = req.query;
-    const where = {};
-    if (status) where.status = status;
-
-    // WHERE (`requestToId` = req.user.id OR `requestFromId` = req.user.id) AND `status` = 'ACCEPTED'
     const friends = await Friend.findAll({
       where: {
-        ...where,
         [Op.or]: [{ requestToId: req.user.id }, { requestFromId: req.user.id }]
       }
     });
+
+    const friendIds = friends.reduce(
+      (acc, item) => {
+        if (req.user.id === item.requestFromId) {
+          acc.push(item.requestToId);
+        } else {
+          acc.push(item.requestFromId);
+        }
+        return acc;
+      },
+      [req.user.id]
+    );
+
+    const users = await User.findAll({
+      where: {
+        id: {
+          [Op.notIn]: friendIds
+        }
+      }
+    });
+    res.status(200).json({ users });
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.getAllFriends = async (req, res, next) => {
+  try {
+    const { status, searchName } = req.query;
+    let where = {
+      [Op.or]: [{ requestToId: req.user.id }, { requestFromId: req.user.id }]
+    };
+    if (status === 'ACCEPTED') {
+      where = {
+        status,
+        [Op.or]: [{ requestToId: req.user.id }, { requestFromId: req.user.id }]
+      };
+    } else if (status === 'REQUESTED') {
+      where = { status, requestToId: req.user.id };
+    }
+
+    // WHERE (`requestToId` = req.user.id OR `requestFromId` = req.user.id) AND `status` = 'ACCEPTED'
+    const friends = await Friend.findAll({ where });
 
     const friendIds = friends.reduce((acc, item) => {
       if (req.user.id === item.requestFromId) {
@@ -101,20 +138,19 @@ exports.updateFriend = async (req, res, next) => {
   try {
     const { friendId } = req.params;
     const friend = await Friend.findOne({
-      where: { id: friendId, status: 'REQUESTED' }
+      where: {
+        requestToId: req.user.id,
+        requestFromId: friendId,
+        status: 'REQUESTED'
+      }
     });
 
     if (!friend) {
       return res.status(400).json({ message: 'this friend request not found' });
     }
 
-    if (friend.requestToId !== req.user.id) {
-      return res
-        .status(403)
-        .json({ message: 'cannot accept this friend request' });
-    }
-
-    await Friend.update({ status: 'ACCEPTED' }, { where: { id: friendId } });
+    friend.status = 'ACCEPTED';
+    await friend.save();
     res.status(200).json({ message: 'friend request accepted' });
   } catch (err) {
     next(err);
@@ -124,22 +160,20 @@ exports.updateFriend = async (req, res, next) => {
 exports.deleteFriend = async (req, res, next) => {
   try {
     const { friendId } = req.params;
-    const friend = await Friend.findOne({ where: { id: friendId } });
+    const friend = await Friend.findOne({
+      where: {
+        [Op.or]: [
+          { requestToId: req.user.id, requestFromId: friendId },
+          { requestToId: friendId, requestFromId: req.user.id }
+        ]
+      }
+    });
 
     if (!friend) {
       return res.status(400).json({ message: 'this friend request not found' });
     }
 
-    if (
-      friend.requestFromId !== req.user.id &&
-      friend.requestToId !== req.user.id
-    ) {
-      return res
-        .status(403)
-        .json({ message: 'cannot delete this friend request' });
-    }
-
-    await Friend.destroy({ where: { id: friendId } });
+    await friend.destroy();
     res.status(204).json();
   } catch (err) {
     next(err);
